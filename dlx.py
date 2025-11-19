@@ -139,3 +139,116 @@ class DLXSolver:
         for sol in self.solve():
             return sol
         return None
+
+    def solve_steps(self):
+        """
+        Generator that yields events describing the solving process.
+        Events are dicts with 'type', 'data', and optional 'state'.
+        """
+        solution: list[Node] = []
+        
+        # Helper to capture current state (list of row_ids)
+        def get_state():
+            return [node.row_id for node in solution]
+
+        def search(depth=0):
+            # 1. Check if solved
+            if self.header.right is self.header:
+                yield {
+                    "type": "SOLUTION",
+                    "data": {"solution": get_state()},
+                    "state": get_state()
+                }
+                return
+
+            # 2. Choose Column (with detailed POV)
+            # We iterate manually to capture the thought process
+            c = self.header.right
+            best_col = c
+            candidates = []
+            
+            while c is not self.header:
+                candidates.append({"name": c.name, "size": c.size})
+                if c.size < best_col.size:
+                    best_col = c
+                c = c.right
+            
+            yield {
+                "type": "CHOOSE_COL",
+                "data": {
+                    "chosen": best_col.name,
+                    "size": best_col.size,
+                    "candidates": candidates, # All checked columns
+                    "reason": f"Column {best_col.name} has the fewest options ({best_col.size})."
+                },
+                "state": get_state()
+            }
+
+            column = best_col
+            
+            if column.size == 0:
+                yield {
+                    "type": "BACKTRACK",
+                    "data": {"reason": f"Column {column.name} has no options left."},
+                    "state": get_state()
+                }
+                return
+
+            self._cover(column)
+            yield {
+                "type": "COVER_COL", 
+                "data": {"col": column.name},
+                "state": get_state()
+            }
+
+            row = column.down
+            while row is not column:
+                solution.append(row)
+                yield {
+                    "type": "SELECT_ROW",
+                    "data": {"row": row.row_id},
+                    "state": get_state()
+                }
+
+                node = row.right
+                while node is not row:
+                    self._cover(node.column)
+                    # yield {"type": "COVER_COL_IMPLICIT", "data": {"col": node.column.name}}
+                    node = node.right
+
+                yield from search(depth + 1)
+
+                row = solution.pop()
+                yield {
+                    "type": "UNSELECT_ROW",
+                    "data": {"row": row.row_id},
+                    "state": get_state()
+                }
+
+                node = row.left
+                while node is not row:
+                    self._uncover(node.column)
+                    node = node.left
+
+                row = row.down
+
+            self._uncover(column)
+            yield {
+                "type": "UNCOVER_COL",
+                "data": {"col": column.name},
+                "state": get_state()
+            }
+            
+            if depth > 0:
+                 yield {
+                    "type": "BACKTRACK",
+                    "data": {"reason": "Tried all options for this column, going back."},
+                    "state": get_state()
+                }
+
+        yield {
+            "type": "INIT",
+            "data": {"message": "Starting search..."},
+            "state": []
+        }
+        yield from search()

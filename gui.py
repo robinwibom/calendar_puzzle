@@ -178,77 +178,63 @@ def draw_solution_grid(
     screen.blit(fade_surface, (0, 0))
 
 
-def show_solutions(
-    solutions: List[List[Placement]],
-    month: int,
-    day: int,
-):
-    pygame.init()
-    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("Calendar Puzzle")
 
-    title_font = pygame.font.SysFont("SF Pro Display", 32, bold=True)
-    label_font = pygame.font.SysFont("SF Pro Text", 24)
-    cell_font = pygame.font.SysFont("SF Pro Text", 24, bold=True)
+def draw_menu(screen: pygame.Surface, title_font: pygame.font.Font, button_font: pygame.font.Font):
+    screen.fill(BG)
+    w, h = screen.get_size()
+    
+    # Title
+    title_surf = title_font.render("Calendar Puzzle", True, TEXT_MAIN)
+    title_rect = title_surf.get_rect(center=(w // 2, h // 4))
+    screen.blit(title_surf, title_rect)
 
-    clock = pygame.time.Clock()
-    total_solutions = len(solutions)
-    current_idx = 0
+    # Buttons
+    mouse_pos = pygame.mouse.get_pos()
+    
+    buttons = [
+        ("Solve Today", "solve_today"),
+        ("Understand the Algorithm", "algorithm"),
+        ("Stats", "stats")
+    ]
+    
+    start_y = h // 2
+    button_height = 60
+    spacing = 20
+    button_width = min(400, w - 80)
+    
+    for i, (text, action) in enumerate(buttons):
+        rect = pygame.Rect((w - button_width) // 2, start_y + i * (button_height + spacing), button_width, button_height)
+        
+        # Hover effect
+        color = CARD_BG
+        if rect.collidepoint(mouse_pos):
+            color = (50, 50, 55)
+            
+        pygame.draw.rect(screen, color, rect, border_radius=12)
+        pygame.draw.rect(screen, GRID, rect, width=1, border_radius=12)
+        
+        label = button_font.render(text, True, TEXT_MAIN)
+        label_rect = label.get_rect(center=rect.center)
+        screen.blit(label, label_rect)
 
-    anim_time = 0.4  # total fade duration (seconds)
-    anim_progress: float | None = None
-    fade_out = True
-    next_idx = current_idx
+def get_menu_action(mouse_pos: Tuple[int, int], screen_size: Tuple[int, int] = (WINDOW_WIDTH, WINDOW_HEIGHT)) -> str | None:
+    w, h = screen_size
+    
+    # Match layout in draw_menu
+    start_y = h // 2
+    button_height = 60
+    spacing = 20
+    button_width = min(400, w - 80)
+    
+    buttons = [
+        ("Solve Today", "solve_today"),
+        ("Understand the Algorithm", "algorithm"),
+        ("Stats", "stats")
+    ]
+    
+    for i, (text, action) in enumerate(buttons):
+        rect = pygame.Rect((w - button_width) // 2, start_y + i * (button_height + spacing), button_width, button_height)
+        if rect.collidepoint(mouse_pos):
+            return action
+    return None
 
-    running = True
-
-    while running:
-        dt = clock.tick(60) / 1000.0
-
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-
-            if event.type == pygame.KEYDOWN and anim_progress is None:
-                if event.key == pygame.K_ESCAPE:
-                    running = False
-
-                if event.key == pygame.K_RIGHT and current_idx < total_solutions - 1:
-                    next_idx = current_idx + 1
-                    anim_progress = 0
-                    fade_out = True
-
-                if event.key == pygame.K_LEFT and current_idx > 0:
-                    next_idx = current_idx - 1
-                    anim_progress = 0
-                    fade_out = True
-
-        screen.fill(BG)
-        draw_top_bar(screen, title_font, label_font, current_idx, total_solutions, month, day)
-
-        if anim_progress is None:
-            # No animation: draw current fully opaque
-            draw_solution_grid(screen, cell_font, solutions[current_idx], month, day, alpha=255)
-
-        else:
-            anim_progress += dt
-
-            if fade_out:
-                # Fade out current solution
-                alpha = max(0, int(255 * (1 - anim_progress / (anim_time / 2))))
-                draw_solution_grid(screen, cell_font, solutions[current_idx], month, day, alpha)
-                if anim_progress >= anim_time / 2:
-                    fade_out = False
-                    anim_progress = 0
-
-            else:
-                # Fade in next solution
-                alpha = min(255, int(255 * (anim_progress / (anim_time / 2))))
-                draw_solution_grid(screen, cell_font, solutions[next_idx], month, day, alpha)
-                if anim_progress >= anim_time / 2:
-                    anim_progress = None
-                    current_idx = next_idx
-
-        pygame.display.flip()
-
-    pygame.quit()

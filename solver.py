@@ -14,7 +14,7 @@ from dlx import DLXSolver
 def build_exact_cover(
     month: int,
     day: int,
-) -> tuple[DLXSolver, List[Placement]]:
+) -> tuple[DLXSolver, List[Placement], List[str]]:
     # Board cells excluding the chosen month/day holes.
     playable = playable_cells_for_date(month, day)
 
@@ -38,6 +38,9 @@ def build_exact_cover(
 
     num_columns = num_pieces + len(cells_sorted)
     solver = DLXSolver(num_columns)
+    
+    # Generate column labels
+    column_labels = piece_names + [f"({r},{c})" for r, c in cells_sorted]
 
     # Build rows.
     for row_id, placement in enumerate(placements):
@@ -45,11 +48,11 @@ def build_exact_cover(
         cols.extend(cell_index[c] for c in placement.cells)
         solver.add_row(row_id, cols)
 
-    return solver, placements
+    return solver, placements, column_labels
 
 
 def solve_for_date(month: int, day: int, find_all: bool = False):
-    solver, placements = build_exact_cover(month, day)
+    solver, placements, _ = build_exact_cover(month, day)
 
     if find_all:
         all_solutions = []
