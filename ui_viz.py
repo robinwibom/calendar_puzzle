@@ -1,5 +1,6 @@
 import pygame
 from typing import List, Dict, Any, Optional
+import random
 from dlx import DLXSolver
 from placements import Placement
 from board import BOARD_ROWS, BOARD_COLS, MONTH_COORDS, DAY_COORDS, ILLEGAL_CELLS
@@ -21,6 +22,151 @@ SCROLLBAR_HOVER = (80, 80, 85)
 
 CONSTRAINT_PIECE = (100, 100, 255) # Blueish for piece constraints
 CONSTRAINT_BOARD = (255, 200, 50)  # Yellowish for board constraints
+
+
+
+def get_narrative_text(event_type: str, data: Dict[str, Any], context: Dict[str, Any], state: 'VizState') -> List[str]:
+    """Generates diverse, human-like narrative text for the algorithm's thought process."""
+    
+    lines = []
+    
+    # Make text deterministic for this step to prevent flickering during scrubbing/updates
+    random.seed(state.current_step)
+    
+    if event_type == "INIT":
+        variations = [
+            ["INITIALIZING", "I am clearing my mind.", "Building the exact cover matrix..."],
+            ["STARTING", "Let's solve this puzzle.", "Constructing the constraints..."],
+            ["READY", "Loading puzzle configuration...", "Preparing the matrix..."]
+        ]
+        lines = random.choice(variations)
+        
+    elif event_type == "CHOOSE_COL":
+        chosen_idx = data['chosen']
+        chosen_label = state.column_labels[chosen_idx]
+        size = data['size']
+        
+        # Format label: "Column 12 (Piece A)" or "Column 45 (Cell 2,3)"
+        col_desc = f"Column {chosen_idx} ({chosen_label})"
+        
+        variations = [
+            [
+                "ANALYZING",
+                f"I need to satisfy {col_desc}.",
+                f"It is the most constrained column with only {size} options.",
+                "Minimizing the branching factor is key."
+            ],
+            [
+                "SCANNING",
+                f"Looking for the tightest constraint...",
+                f"Aha! {col_desc} has just {size} possible moves.",
+                "Let's focus on that one."
+            ],
+            [
+                "THINKING",
+                f"Where should I start?",
+                f"{col_desc} leaves me with very few choices ({size}).",
+                "This is the best place to attack the problem."
+            ]
+        ]
+        lines = random.choice(variations)
+        
+    elif event_type == "SELECT_ROW":
+        row_id = data['row']
+        p = state.placements[row_id]
+        idx = context.get("option_idx", "?")
+        total = context.get("total_options", "?")
+        col_idx = context.get("col", "?")
+        col_label = state.column_labels[col_idx] if isinstance(col_idx, int) and 0 <= col_idx < len(state.column_labels) else str(col_idx)
+        
+        col_desc = f"Column {col_idx} ({col_label})"
+        piece_desc = f"Piece {p.piece}"
+        loc_desc = f"({p.cells[0][0]}, {p.cells[0][1]})"
+        
+        variations = [
+            [
+                "DECIDING",
+                f"Let's try Option {idx} of {total} for {col_desc}.",
+                f"Placing {piece_desc} at {loc_desc}.",
+                "I hope this fits..."
+            ],
+            [
+                "HYPOTHESIZING",
+                f"Hmm, what if I pick Option {idx}/{total}?",
+                f"I'll put {piece_desc} at {loc_desc}.",
+                "Let's see where this path leads."
+            ],
+            [
+                "MAKING A MOVE",
+                f"Attempting Option {idx} for {col_desc}.",
+                f"Locking in {piece_desc} at {loc_desc}.",
+                "Fingers crossed."
+            ]
+        ]
+        lines = random.choice(variations)
+        
+    elif event_type == "BACKTRACK":
+        col_idx = context.get("col", "?")
+        col_label = "?"
+        if isinstance(col_idx, int) and 0 <= col_idx < len(state.column_labels):
+            col_label = state.column_labels[col_idx]
+            
+        col_desc = f"Column {col_idx} ({col_label})"
+        
+        variations = [
+            [
+                "BACKTRACKING",
+                f"Drat! I cannot satisfy {col_desc}.",
+                "All remaining options conflict with my previous choices.",
+                "I must have made a mistake earlier."
+            ],
+            [
+                "DEAD END",
+                f"I'm stuck on {col_desc}.",
+                "Every piece I could put here overlaps with something else.",
+                "Time to reverse and try a different path."
+            ],
+            [
+                "OOPS",
+                f"Impossible to cover {col_desc}.",
+                "The board is too crowded; nothing fits here.",
+                "Going back up the tree..."
+            ]
+        ]
+        lines = random.choice(variations)
+        
+    elif event_type == "SOLUTION":
+        variations = [
+            ["SOLVED", "I found it!", "Every column is covered exactly once.", "The puzzle is complete."],
+            ["SUCCESS", "Aha! A valid configuration.", "All constraints are satisfied.", "Beautiful."],
+            ["DONE", "Solution found.", "Everything fits perfectly.", "That was fun."]
+        ]
+        lines = random.choice(variations)
+        
+    elif event_type == "UNSELECT_ROW":
+        variations = [
+            [
+                "REVERSING", 
+                "Removing the last piece.", 
+                "Let's try the next option instead."
+            ],
+            [
+                "UNDOING",
+                "Lifting the piece.",
+                "That didn't work out. Next!"
+            ],
+            [
+                "RETREATING",
+                "Backing out.",
+                "Let's explore the other branch."
+            ]
+        ]
+        lines = random.choice(variations)
+        
+    return lines
+
+
+
 
 class VizState:
     def __init__(self, month: int, day: int):
@@ -76,6 +222,36 @@ class VizState:
             else:
                 break
         
+        # Animation State
+        self.matrix_reveal_progress = 0.0
+        self.guidance_anim_timer = 0.0
+        self.last_guidance_target = None
+        self.current_narrative = [] # Cache for narrative text
+        self.first_frame = True # Skip first update to avoid large dt
+        
+        # Glowing Cell Trail Transition Animation
+        self.transition_active = False
+        self.transition_progress = 0.0  # 0.0 to 1.0
+        self.transition_from_col = None  # Column index
+        self.transition_to_row = None    # Row index
+        self.transition_duration = 1.5   # 1.5 seconds - slower for split animation
+        self.transition_start_scroll_row = 0.0  # Starting scroll position for interpolation
+        
+        # Red Shake Animation for Backtracking
+        self.shake_active = False
+        self.shake_progress = 0.0  # 0.0 to 1.0
+        self.shake_duration = 0.4  # 0.4 seconds - quick shake
+        self.shake_intensity = 8  # Pixels to shake
+        self.shake_target_col = None  # Column being uncovered
+        self.shake_target_row = None  # Row being deselected
+        
+        # Lift-Away Animation for Piece Removal
+        self.lift_active = False
+        self.lift_progress = 0.0
+        self.lift_duration = 0.8
+        self.lift_row_idx = None
+        self.lift_cols = []  # List of column indices for the lifting row
+        
         # Generate descriptive row labels (keep for debug)
         self.row_labels: List[str] = []
         
@@ -97,6 +273,9 @@ class VizState:
                     c_idx = self.label_to_index[c_label]
                     if c_idx not in self.col_to_rows: self.col_to_rows[c_idx] = []
                     self.col_to_rows[c_idx].append(row_id)
+
+        # Initialize first step state
+        self.set_step(0)
 
     def process_history(self, raw_events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -178,7 +357,44 @@ class VizState:
         return processed
         
     def update(self, dt: float):
+        if self.first_frame:
+            self.first_frame = False
+            self.matrix_reveal_progress = 0.0  # Reset animation after first frame skip
+            return
+
         self.step_timer += dt
+        
+        # Matrix Reveal Animation (slower for visibility)
+        if self.current_step == 0:
+            self.matrix_reveal_progress = min(1.0, self.matrix_reveal_progress + dt * (1.0 / 10.0)) # 10.0s reveal
+        else:
+            self.matrix_reveal_progress = 1.0
+
+        # Guidance Animation
+        if self.guidance_anim_timer > 0:
+            self.guidance_anim_timer -= dt
+        
+        # Glowing Cell Trail Transition Animation
+        if self.transition_active:
+            self.transition_progress += dt / self.transition_duration
+            if self.transition_progress >= 1.0:
+                self.transition_progress = 1.0
+                self.transition_active = False  # Animation complete
+        
+        # Red Shake Animation for Backtracking
+        if self.shake_active:
+            self.shake_progress += dt / self.shake_duration
+            if self.shake_progress >= 1.0:
+                self.shake_progress = 1.0
+                self.shake_active = False  # Shake complete
+        
+        # Lift-Away Animation
+        if self.lift_active:
+            self.lift_progress += dt / self.lift_duration
+            if self.lift_progress >= 1.0:
+                self.lift_progress = 1.0
+                self.lift_active = False
+        
         if self.playing and self.current_step < self.total_steps - 1:
             self.timer += dt
             if self.timer >= self.play_speed:
@@ -194,17 +410,119 @@ class VizState:
         else:
             self.scroll_col_idx = self.target_scroll_col_idx
 
-        # Smooth scroll Y
-        diff_y = self.target_scroll_row_idx - self.scroll_row_idx
-        if abs(diff_y) > 0.1:
-            self.scroll_row_idx += diff_y * dt * 10
+        # Smooth scroll Y - but follow the glowing trail animation if active
+        if self.transition_active and self.transition_to_row is not None:
+            # Scroll follows the animation progress with easing
+            # Calculate how far down we should be scrolled based on animation progress
+            target_at_completion = max(0, self.transition_to_row - 5)
+            
+            # SYNC WITH VERTICAL PHASE (0.0 to 0.55)
+            # We want the scroll to complete exactly when the bar hits the bottom (at t=0.55)
+            split_point = 0.55
+            t = self.transition_progress
+            
+            if t <= split_point:
+                # Normalize t for vertical phase (0.0 to 1.0)
+                vert_t = t / split_point
+                # Apply ease-in-out easing to match the bar's movement
+                vert_ease = vert_t * vert_t * (3.0 - 2.0 * vert_t)
+                
+                # Interpolate FROM start TO target based on VERTICAL progress
+                start_scroll = self.transition_start_scroll_row
+                animated_scroll_target = start_scroll + (target_at_completion - start_scroll) * vert_ease
+                self.scroll_row_idx = animated_scroll_target
+            else:
+                # Animation is in horizontal spread phase, scroll should be at target
+                self.scroll_row_idx = target_at_completion
+                
+            self.target_scroll_row_idx = target_at_completion  # Set final target
         else:
-            self.scroll_row_idx = self.target_scroll_row_idx
+            # Normal smooth scrolling when not animating
+            diff_y = self.target_scroll_row_idx - self.scroll_row_idx
+            if abs(diff_y) > 0.1:
+                self.scroll_row_idx += diff_y * dt * 10
+            else:
+                self.scroll_row_idx = self.target_scroll_row_idx
 
     def set_step(self, step: int):
+        # Store previous event type to detect transitions
+        prev_event_type = self.current_event["type"] if hasattr(self, 'current_event') else None
+        
+        # Reset animation state first to prevent instability when jumping steps
+        self.transition_active = False
+        self.transition_progress = 0.0
+        self.shake_active = False
+        self.shake_progress = 0.0
+        self.lift_active = False
+        self.lift_progress = 0.0
+        
         self.current_step = step
         self.current_event = self.history[step]
         self.step_timer = 0.0
+        self.guidance_anim_timer = 1.0 # Start guidance animation
+        
+        # Generate and cache narrative for this step to avoid flickering
+        event_type = self.current_event["type"]
+        event_data = self.current_event.get("data", {})
+        narrative_ctx = self.current_event.get("narrative_ctx", {})
+        self.current_narrative = get_narrative_text(event_type, event_data, narrative_ctx, self)
+        
+        # Detect CHOOSE_COL -> SELECT_ROW transition and trigger glowing cell trail
+        # Only trigger if this is a forward step (step > previous step) to avoid issues with jumping
+        if prev_event_type == "CHOOSE_COL" and event_type == "SELECT_ROW" and hasattr(self, 'current_step'):
+            prev_step = getattr(self, '_last_step', -1)
+            if step == prev_step + 1:  # Only on forward transitions
+                # The column that was chosen is in the previous event
+                prev_event = self.history[step - 1] if step > 0 else None
+                if prev_event:
+                    prev_data = prev_event.get("data", {})
+                    chosen_col_idx = prev_data.get("chosen")  # This is already a column INDEX (integer)
+                    
+                    if chosen_col_idx is not None:
+                        row_idx = event_data.get("row")
+                        
+                        if row_idx is not None:
+                            # Reset viewport to top before starting animation
+                            self.scroll_row_idx = 0.0
+                            self.target_scroll_row_idx = 0.0
+                            
+                            # Start the glowing cell trail animation
+                            self.transition_active = True
+                            self.transition_progress = 0.0
+                            self.transition_from_col = chosen_col_idx  # Use the index directly
+                            self.transition_to_row = row_idx
+                            self.transition_start_scroll_row = 0.0  # Always start from top
+        
+        # Detect backtracking events and trigger red shake animation
+        if event_type == "BACKTRACK":
+            # Trigger shake animation
+            self.shake_active = True
+            self.shake_progress = 0.0
+        
+        # Detect UNSELECT_ROW for Lift-Away Animation
+        if event_type == "UNSELECT_ROW":
+            row_idx = event_data.get("row")
+            if row_idx is not None:
+                self.lift_active = True
+                self.lift_progress = 0.0
+                self.lift_row_idx = row_idx
+                
+                # Calculate columns for this row
+                placement = self.placements[row_idx]
+                self.lift_cols = []
+                
+                # Piece column
+                if placement.piece in self.label_to_index:
+                    self.lift_cols.append(self.label_to_index[placement.piece])
+                
+                # Cell columns
+                for cell in placement.cells:
+                    c_label = f"({cell[0]},{cell[1]})"
+                    if c_label in self.label_to_index:
+                        self.lift_cols.append(self.label_to_index[c_label])
+        
+        # Store current step for next comparison
+        self._last_step = step
         
         # Auto-scroll to active column/row
         event = self.current_event
@@ -226,10 +544,13 @@ class VizState:
         # 2. Focus Row
         active_row = data.get("row")
         if active_row is not None:
-            # We need to know where this row is in the *current view*.
-            # Since we show ALL rows in the matrix (just scrolled), 
-            # we can just scroll to the row index.
-            self.target_scroll_row_idx = max(0, active_row - 5)
+            # Don't jump to row immediately if we're starting a glowing trail animation
+            # The animation will handle the smooth scroll
+            if not (event_type == "SELECT_ROW" and self.transition_active):
+                # We need to know where this row is in the *current view*.
+                # Since we show ALL rows in the matrix (just scrolled), 
+                # we can just scroll to the row index.
+                self.target_scroll_row_idx = max(0, active_row - 5)
 
     def step_forward(self):
         if self.current_step < self.total_steps - 1:
@@ -391,6 +712,23 @@ def draw_matrix(screen: pygame.Surface, rect: pygame.Rect, state: VizState, font
     offset_x = int((state.scroll_col_idx - start_col) * COL_WIDTH) - centering_offset_x
     offset_y = int((state.scroll_row_idx - start_row) * ROW_HEIGHT)
     
+    # Shake offset for backtracking animation
+    shake_offset_x = 0
+    shake_offset_y = 0
+    if state.shake_active:
+        # Create oscillating shake using sine wave with decay
+        # Progress goes 0 -> 1, we want multiple oscillations that decay
+        oscillation_frequency = 6  # Number of shakes
+        decay = 1.0 - state.shake_progress  # Decay from 1 to 0
+        import math
+        shake_amount = math.sin(state.shake_progress * math.pi * oscillation_frequency) * state.shake_intensity * decay
+        shake_offset_x = int(shake_amount)
+        shake_offset_y = int(shake_amount * 0.5)  # Less vertical shake
+    
+    # Apply shake offset
+    offset_x += shake_offset_x
+    offset_y += shake_offset_y
+    
     # --- Draw Grid & Content ---
     
     event = state.current_event
@@ -480,6 +818,31 @@ def draw_matrix(screen: pygame.Surface, rect: pygame.Rect, state: VizState, font
 
         # Cells
         for c_idx in range(start_col, end_col):
+            # Matrix Reveal Animation Check (Diagonal Wave)
+            cell_alpha = 255  # Full opacity by default
+            if state.matrix_reveal_progress < 1.0:
+                # Calculate diagonal index (top-left to bottom-right)
+                diag_idx = (r_idx + c_idx)
+                # Max diagonal index approx (num_rows + num_cols)
+                max_diag = num_rows + num_cols
+                
+                # Normalize threshold based on progress
+                threshold = state.matrix_reveal_progress * max_diag * 1.5 # 1.5 multiplier to ensure full coverage
+                
+                if diag_idx > threshold:
+                    # Cell hasn't been revealed yet
+                    continue
+                else:
+                    # Cell is being revealed - calculate fade-in alpha
+                    # The closer diag_idx is to threshold, the more faded
+                    fade_range = max_diag * 0.1  # Fade over 10% of the total diagonal range
+                    distance_from_threshold = threshold - diag_idx
+                    if distance_from_threshold < fade_range:
+                        # Fade from 0 to 255 as distance increases
+                        cell_alpha = int(255 * (distance_from_threshold / fade_range))
+                    else:
+                        cell_alpha = 255
+
             x = view_rect.x + (c_idx - start_col) * COL_WIDTH - offset_x
             
             # Clip X
@@ -488,8 +851,13 @@ def draw_matrix(screen: pygame.Surface, rect: pygame.Rect, state: VizState, font
             
             cell_rect = pygame.Rect(x, y, COL_WIDTH, ROW_HEIGHT)
             
-            # Vertical Grid Line
-            pygame.draw.line(screen, MATRIX_GRID, (x + COL_WIDTH, y), (x + COL_WIDTH, y + ROW_HEIGHT))
+            # Vertical Grid Line (with alpha during animation)
+            if cell_alpha < 255:
+                line_surf = pygame.Surface((2, ROW_HEIGHT), pygame.SRCALPHA)
+                line_surf.fill((*MATRIX_GRID, cell_alpha))
+                screen.blit(line_surf, (x + COL_WIDTH, y))
+            else:
+                pygame.draw.line(screen, MATRIX_GRID, (x + COL_WIDTH, y), (x + COL_WIDTH, y + ROW_HEIGHT))
             
             # Draw '1's
             if c_idx in row_cols_indices:
@@ -503,19 +871,216 @@ def draw_matrix(screen: pygame.Surface, rect: pygame.Rect, state: VizState, font
                 elif is_conflicting:
                     color = (60, 60, 70) # Dimmed if row is conflicting but this col isn't the cause (unlikely in exact cover, usually it IS the cause)
                 
+                # Apply alpha to color during animation
+                if cell_alpha < 255:
+                    color = (*color, cell_alpha)
+                
                 if is_piece_col:
                     center = cell_rect.center
-                    pygame.draw.circle(screen, color, center, 4)
+                    if cell_alpha < 255:
+                        # Draw with alpha
+                        circle_surf = pygame.Surface((10, 10), pygame.SRCALPHA)
+                        pygame.draw.circle(circle_surf, color, (5, 5), 4)
+                        screen.blit(circle_surf, (center[0] - 5, center[1] - 5))
+                    else:
+                        pygame.draw.circle(screen, color, center, 4)
                 else:
                     center = cell_rect.center
-                    pygame.draw.rect(screen, color, (center[0]-3, center[1]-3, 6, 6))
+                    if cell_alpha < 255:
+                        # Draw with alpha
+                        rect_surf = pygame.Surface((8, 8), pygame.SRCALPHA)
+                        pygame.draw.rect(screen, color, (center[0]-3, center[1]-3, 6, 6))
 
-    # 2. Column Headers (Floating on top)
+    # 3. Glowing Trail Transition Animation - Smooth Vertical Bar + Impact Spread
+    if state.transition_active and state.transition_from_col is not None and state.transition_to_row is not None:
+        col_idx = state.transition_from_col
+        target_row_idx = state.transition_to_row
+        
+        # Check if column is visible
+        if col_idx >= start_col and col_idx < end_col:
+            # Calculate column x position
+            x = view_rect.x + (col_idx - start_col) * COL_WIDTH - offset_x
+            
+            if x >= view_rect.x - COL_WIDTH and x <= view_rect.right:
+                
+                # TIMELINE SPLIT:
+                # 0.0 to 0.55: Vertical Bar Growth
+                # 0.55 to 1.0: Horizontal Spread
+                split_point = 0.55
+                t = state.transition_progress
+                
+                # --- Phase 1: Vertical Growth ---
+                if t <= split_point:
+                    vert_t = t / split_point
+                else:
+                    vert_t = 1.0 # Fully extended
+                
+                # Ease the vertical motion
+                vert_ease = vert_t * vert_t * (3.0 - 2.0 * vert_t)
+                
+                # Calculate the animated row position
+                current_animated_row = vert_ease * target_row_idx
+                
+                # Draw vertical bar
+                bar_start_y = view_rect.y - offset_y
+                
+                # Fade out from top (Drain effect) during spread phase
+                drain_alpha_factor = 1.0
+                if t > split_point:
+                    spread_t_drain = (t - split_point) / (1.0 - split_point)
+                    drain_ease = spread_t_drain * spread_t_drain
+                    drain_alpha_factor = 1.0 - spread_t_drain
+                    
+                    # Move start Y down to simulate draining
+                    total_dist = (target_row_idx - start_row) * ROW_HEIGHT
+                    bar_start_y += total_dist * drain_ease
+                
+                if current_animated_row >= start_row:
+                    bar_end_y = view_rect.y + (current_animated_row - start_row) * ROW_HEIGHT - offset_y
+                    
+                    bar_start_y_clamped = max(bar_start_y, view_rect.y)
+                    bar_end_y_clamped = min(bar_end_y, view_rect.bottom)
+                    
+                    if bar_end_y_clamped > bar_start_y_clamped:
+                        bar_height = bar_end_y_clamped - bar_start_y_clamped
+                        
+                        # Gradient surface
+                        bar_surf = pygame.Surface((COL_WIDTH, int(bar_height)), pygame.SRCALPHA)
+                        for i in range(int(bar_height)):
+                            base_alpha = int(100 + 155 * (i / bar_height))
+                            alpha = int(base_alpha * drain_alpha_factor)
+                            pygame.draw.line(bar_surf, (100, 220, 255, alpha), (0, i), (COL_WIDTH, i))
+                        
+                        # Borders
+                        pygame.draw.rect(bar_surf, (150, 255, 255), bar_surf.get_rect(), 3)
+                        
+                        screen.blit(bar_surf, (x, bar_start_y_clamped))
+                        
+                        # Glowing tip
+                        tip_y = bar_end_y_clamped
+                        tip_height = min(6, bar_height)
+                        tip_surf = pygame.Surface((COL_WIDTH, int(tip_height)), pygame.SRCALPHA)
+                        tip_surf.fill((200, 240, 255, 200))
+                        screen.blit(tip_surf, (x, tip_y - tip_height))
+                        
+                        # --- Phase 2: Horizontal Spread (Impact) ---
+                        if t > split_point:
+                            # Normalize t for this phase (0.0 to 1.0)
+                            spread_t = (t - split_point) / (1.0 - split_point)
+                            spread_ease = spread_t * spread_t * (3.0 - 2.0 * spread_t)
+                            
+                            dest_row_y = view_rect.y + (target_row_idx - start_row) * ROW_HEIGHT - offset_y
+                            
+                            if dest_row_y >= view_rect.y and dest_row_y <= view_rect.bottom:
+                                # Spread width
+                                max_spread = 800 # Pixels - Increased for wider reach
+                                current_spread = max_spread * spread_ease
+                                spread_h = ROW_HEIGHT
+                                
+                                # Left Bar
+                                left_bar_w = int(current_spread)
+                                left_bar_surf = pygame.Surface((left_bar_w, spread_h), pygame.SRCALPHA)
+                                for i in range(left_bar_w):
+                                    alpha_ratio = i / left_bar_w
+                                    # Fade out as it spreads (1.0 -> 0.0)
+                                    fade_factor = 1.0 - spread_t
+                                    alpha = int(200 * alpha_ratio * fade_factor)
+                                    pygame.draw.line(left_bar_surf, (100, 200, 255, alpha), (i, 0), (i, spread_h))
+                                screen.blit(left_bar_surf, (x - left_bar_w, dest_row_y))
+                                
+                                # Right Bar
+                                right_bar_w = int(current_spread)
+                                right_bar_surf = pygame.Surface((right_bar_w, spread_h), pygame.SRCALPHA)
+                                for i in range(right_bar_w):
+                                    alpha_ratio = 1.0 - (i / right_bar_w)
+                                    # Fade out as it spreads (1.0 -> 0.0)
+                                    fade_factor = 1.0 - spread_t
+                                    alpha = int(200 * alpha_ratio * fade_factor)
+                                    pygame.draw.line(right_bar_surf, (100, 200, 255, alpha), (i, 0), (i, spread_h))
+                                screen.blit(right_bar_surf, (x + COL_WIDTH, dest_row_y))
+                                
+                                # Flash
+                                flash_alpha = int(255 * spread_ease * (1.0 - spread_t))
+                                if flash_alpha > 0:
+                                    flash_surf = pygame.Surface((COL_WIDTH, ROW_HEIGHT), pygame.SRCALPHA)
+                                    flash_surf.fill((255, 255, 255, flash_alpha))
+                                    screen.blit(flash_surf, (x, dest_row_y))
+
+    # 4. Red Shake Overlay for Backtracking
+    if state.shake_active:
+        # Apply red tint overlay to entire matrix area
+        red_overlay = pygame.Surface((view_rect.width, view_rect.height), pygame.SRCALPHA)
+        # Fade in and out based on progress
+        overlay_intensity = math.sin(state.shake_progress * math.pi)  # 0 -> 1 -> 0
+        red_alpha = int(80 * overlay_intensity)  # Max 80 alpha
+        red_overlay.fill((255, 50, 50, red_alpha))  # Red tint
+        screen.blit(red_overlay, view_rect.topleft)
+
+    # 5. Lift-Away Animation (Floating pieces up)
+    if state.lift_active and state.lift_row_idx is not None:
+        # Calculate base Y position for the row
+        # We need to access start_row and offset_y from the outer scope
+        # They are defined at the top of draw_matrix
+        row_y = view_rect.y + (state.lift_row_idx - start_row) * ROW_HEIGHT - offset_y
+        
+        # Only draw if row is roughly visible (or slightly off-screen is fine since it floats up)
+        if row_y > view_rect.y - ROW_HEIGHT * 2 and row_y < view_rect.bottom:
+            
+            # Animation parameters
+            t = state.lift_progress
+            ease_out = 1.0 - (1.0 - t) * (1.0 - t)  # Quadratic ease out
+            
+            scale = 1.0 + 0.5 * ease_out  # Grow to 1.5x
+            lift_y = -80 * ease_out       # Float up 80px
+            alpha = int(255 * (1.0 - t))  # Fade out
+            
+            # Color for lifting piece - Use the actual piece color
+            lift_color = (255, 120, 80) # Default fallback
+            
+            # Try to get the actual piece color
+            try:
+                placement = state.placements[state.lift_row_idx]
+                piece_name = placement.piece
+                if piece_name in PIECE_COLORS:
+                    lift_color = PIECE_COLORS[piece_name]
+            except:
+                pass 
+            
+            for col_idx in state.lift_cols:
+                # Calculate X position
+                col_x = view_rect.x + (col_idx - start_col) * COL_WIDTH - offset_x
+                
+                if col_x > view_rect.x - COL_WIDTH and col_x < view_rect.right:
+                    # Center of the cell
+                    center_x = col_x + COL_WIDTH / 2
+                    center_y = row_y + ROW_HEIGHT / 2 + lift_y
+                    
+                    # Scaled dimensions
+                    w = COL_WIDTH * scale
+                    h = ROW_HEIGHT * scale
+                    
+                    # Create surface for the lifting cell (supports alpha)
+                    cell_surf = pygame.Surface((int(w), int(h)), pygame.SRCALPHA)
+                    
+                    # Draw cell body
+                    pygame.draw.rect(cell_surf, (*lift_color, alpha), (0, 0, int(w), int(h)), border_radius=4)
+                    
+                    # Draw "X" or symbol to indicate removal?
+                    # Maybe just a border is enough
+                    pygame.draw.rect(cell_surf, (255, 255, 255, alpha), (0, 0, int(w), int(h)), 2, border_radius=4)
+                    
+                    # Blit centered
+                    screen.blit(cell_surf, (center_x - w/2, center_y - h/2))
+
+
+    # 4. Column Headers (Floating on top)
     pygame.draw.rect(screen, MATRIX_HEADER_BG, (rect.x, rect.y, rect.width, HEADER_HEIGHT))
     pygame.draw.line(screen, MATRIX_GRID, (rect.x, rect.y + HEADER_HEIGHT), (rect.width, rect.y + HEADER_HEIGHT))
     
     # Corner
     pygame.draw.line(screen, MATRIX_GRID, (rect.x + ROW_LABEL_WIDTH, rect.y), (rect.x + ROW_LABEL_WIDTH, rect.y + HEADER_HEIGHT))
+    
+    active_col_center_x = None
     
     for c_idx in range(start_col, end_col):
         x = view_rect.x + (c_idx - start_col) * COL_WIDTH - offset_x
@@ -529,6 +1094,7 @@ def draw_matrix(screen: pygame.Surface, rect: pygame.Rect, state: VizState, font
         
         # Highlight active column
         if c_idx == active_col_idx:
+            active_col_center_x = col_rect.centerx
             # Animation: Top-down wipe
             anim_progress = min(1.0, state.step_timer / 0.3) # 0.3s duration
             anim_height = int(col_rect.height * anim_progress)
@@ -574,7 +1140,11 @@ def draw_matrix(screen: pygame.Surface, rect: pygame.Rect, state: VizState, font
         if c_idx == state.num_piece_cols - 1:
             pygame.draw.line(screen, (150, 150, 150), (x + COL_WIDTH, rect.y), (x + COL_WIDTH, rect.bottom), 2)
 
-    # 3. Scrollbars
+    # 3. Visual Guidance Line (Removed per user request)
+    pass
+
+
+    # 4. Scrollbars
     # Vertical
     # Add a small top margin (4px) to make it look "floating" and intentional
     sb_y_rect = pygame.Rect(
@@ -725,65 +1295,10 @@ def draw_viz(screen: pygame.Surface, font_title: pygame.font.Font, font_body: py
     screen.blit(title, (text_area.x + 20, y))
     y += 50
     
-    lines = []
-    if event_type == "INIT":
-        lines = ["INITIALIZING", "I am ready to start.", "Building the matrix..."]
-        
-    elif event_type == "CHOOSE_COL":
-        chosen_idx = event_data['chosen']
-        chosen_label = state.column_labels[chosen_idx]
-        size = event_data['size']
-        candidates = event_data.get('candidates', [])
-        
-        # Find the minimum size to make the text accurate
-        min_size = min((c['size'] for c in candidates), default=size)
-        
-        lines = [
-            "ANALYZING",
-            "I am looking for the 'most constrained' column (fewest options).",
-            f"I see that column '{chosen_label}' has only {size} possible moves.",
-            f"This is the best choice to minimize guessing."
-        ]
-        
-    elif event_type == "SELECT_ROW":
-        row_id = event_data['row']
-        p = state.placements[row_id]
-        ctx = current_event.get("narrative_ctx", {})
-        
-        idx = ctx.get("option_idx", "?")
-        total = ctx.get("total_options", "?")
-        col = ctx.get("col", "?")
-        
-        lines = [
-            "DECIDING",
-            f"I am trying Option {idx} of {total} for column '{col}'.",
-            f"Placing Piece {p.piece} at ({p.cells[0][0]}, {p.cells[0][1]}).",
-            "Let's see if this leads to a solution..."
-        ]
-        
-    elif event_type == "BACKTRACK":
-        ctx = current_event.get("narrative_ctx", {})
-        col = ctx.get("col", "?")
-        
-        lines = [
-            "BACKTRACKING",
-            f"I cannot satisfy column '{col}'.",
-            "All options for this column conflict with my previous choices.",
-            "This means one of my earlier decisions was wrong."
-        ]
-        
-    elif event_type == "SOLUTION":
-        lines = ["SOLVED", "I have found a solution.", "All constraints are satisfied exactly once."]
-        
-    elif event_type == "UNSELECT_ROW":
-        lines = [
-            "BACKTRACKING", 
-            "Removing the last piece.", 
-            "I will return to the previous decision point and try the next option."
-        ]
+    # Use Cached Narrative (prevent flickering)
+    lines = state.current_narrative
     
-    # (Removed COVER_COL and UNCOVER_COL blocks as they are filtered out)
-    
+    # Render Lines with Standard Text Support
     for line in lines:
         # Wrap text
         words = line.split(' ')
@@ -793,14 +1308,18 @@ def draw_viz(screen: pygame.Surface, font_title: pygame.font.Font, font_body: py
             if font_body.size(test_line)[0] < text_area.width - 40:
                 curr_line = test_line
             else:
+                # Draw current line
                 surf = font_body.render(curr_line, True, TEXT_SECONDARY)
                 screen.blit(surf, (text_area.x + 20, y))
                 y += 25
                 curr_line = word + " "
-        surf = font_body.render(curr_line, True, TEXT_SECONDARY)
-        screen.blit(surf, (text_area.x + 20, y))
-        y += 30
         
+        # Draw last part
+        if curr_line:
+            surf = font_body.render(curr_line, True, TEXT_SECONDARY)
+            screen.blit(surf, (text_area.x + 20, y))
+        y += 35 # Paragraph spacing
+
     # Timeline Controls (Bottom of Text Area)
     controls_y = half_h - 80
     
@@ -835,6 +1354,8 @@ def draw_viz(screen: pygame.Surface, font_title: pygame.font.Font, font_body: py
             
     # --- 3. Draw Matrix View (Bottom) ---
     draw_matrix(screen, matrix_area, state, font_body)
+    
+
     
     # --- 4. Visual Polish (Shadows) ---
     # Shadow separating Board and Thoughts (Vertical)
