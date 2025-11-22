@@ -32,9 +32,21 @@ def main():
     # State for Solve Today
     solutions: List[List[Placement]] = []
     current_sol_idx = 0
-    anim_time = 0.4
-    anim_progress: float | None = None
-    fade_out = True
+    
+    # Animation State
+    anim_phase = "IDLE"  # "IDLE", "REMOVING", "PLACING"
+    visible_pieces: set[str] = set()
+    pieces_sequence: List[str] = []
+    current_piece_idx = 0
+    piece_timer = 0.0
+    PIECE_DELAY = 0.15
+    
+    # Shake effects
+    shake_timer = 0.0
+    SHAKE_DURATION = 0.1
+    completion_shake_timer = 0.0
+    COMPLETION_SHAKE_DURATION = 0.4
+    
     next_sol_idx = 0
     
     # State for Algorithm View
@@ -61,6 +73,16 @@ def main():
                         found = solve_for_date(today.month, today.day, find_all=True)
                         solutions = found if found else []
                         current_sol_idx = 0
+                        
+                        # Start initial animation
+                        if solutions:
+                            anim_phase = "PLACING"
+                            visible_pieces = set()
+                            pieces_sequence = sorted([p.piece for p in solutions[current_sol_idx]])
+                            current_piece_idx = 0
+                            piece_timer = 0
+                            shake_timer = 0
+                            completion_shake_timer = 0
                         
                     elif action == "algorithm":
                         app_state.current_state = UIState.ALGORITHM_INTRO
@@ -109,15 +131,22 @@ def main():
                     if not solutions:
                         continue
                         
-                    if anim_progress is None:
+                    if anim_phase == "IDLE":
                         if event.key == pygame.K_RIGHT and current_sol_idx < len(solutions) - 1:
                             next_sol_idx = current_sol_idx + 1
-                            anim_progress = 0
-                            fade_out = True
+                            anim_phase = "REMOVING"
+                            # Remove in reverse order (I -> A)
+                            pieces_sequence = sorted([p.piece for p in solutions[current_sol_idx]], reverse=True)
+                            current_piece_idx = 0
+                            piece_timer = 0
+                            
                         elif event.key == pygame.K_LEFT and current_sol_idx > 0:
                             next_sol_idx = current_sol_idx - 1
-                            anim_progress = 0
-                            fade_out = True
+                            anim_phase = "REMOVING"
+                            # Remove in reverse order
+                            pieces_sequence = sorted([p.piece for p in solutions[current_sol_idx]], reverse=True)
+                            current_piece_idx = 0
+                            piece_timer = 0
 
         # Update
         if app_state.current_state == UIState.ALGORITHM_VIEW and viz_state:
@@ -140,22 +169,70 @@ def main():
                 draw_top_bar(screen, title_font, label_font, current_sol_idx, len(solutions), month, day)
                 
                 if solutions:
-                    if anim_progress is None:
-                        draw_solution_grid(screen, cell_font, solutions[current_sol_idx], month, day, alpha=255)
-                    else:
-                        anim_progress += dt
-                        if fade_out:
-                            alpha = max(0, int(255 * (1 - anim_progress / (anim_time / 2))))
-                            draw_solution_grid(screen, cell_font, solutions[current_sol_idx], month, day, alpha)
-                            if anim_progress >= anim_time / 2:
-                                fade_out = False
-                                anim_progress = 0
-                        else:
-                            alpha = min(255, int(255 * (anim_progress / (anim_time / 2))))
-                            draw_solution_grid(screen, cell_font, solutions[next_sol_idx], month, day, alpha)
-                            if anim_progress >= anim_time / 2:
-                                anim_progress = None
+                    # --- UPDATE ANIMATION ---
+                    if anim_phase == "REMOVING":
+                        piece_timer += dt
+                        if piece_timer >= PIECE_DELAY * 0.4:  # Remove faster than place
+                            piece_timer = 0
+                            if current_piece_idx < len(pieces_sequence):
+                                p = pieces_sequence[current_piece_idx]
+                                if p in visible_pieces:
+                                    visible_pieces.remove(p)
+                                current_piece_idx += 1
+                            else:
+                                # Done removing, switch to placing next solution
                                 current_sol_idx = next_sol_idx
+                                anim_phase = "PLACING"
+                                visible_pieces = set()
+                                pieces_sequence = sorted([p.piece for p in solutions[current_sol_idx]])
+                                current_piece_idx = 0
+                                piece_timer = 0
+                    
+                    elif anim_phase == "PLACING":
+                        piece_timer += dt
+                        if piece_timer >= PIECE_DELAY:
+                            piece_timer = 0
+                            if current_piece_idx < len(pieces_sequence):
+                                p = pieces_sequence[current_piece_idx]
+                                visible_pieces.add(p)
+                                current_piece_idx += 1
+                                # Trigger shake
+                                shake_timer = SHAKE_DURATION
+                            else:
+                                # Done placing
+                                anim_phase = "IDLE"
+                                completion_shake_timer = COMPLETION_SHAKE_DURATION
+
+                    # Update shake timers
+                    shake_offset = (0, 0)
+                    if shake_timer > 0:
+                        shake_timer -= dt
+                        if shake_timer > 0:
+                            import random
+                            shake_offset = (random.randint(-1, 1), random.randint(-1, 1))
+                    
+                    if completion_shake_timer > 0:
+                        completion_shake_timer -= dt
+                        if completion_shake_timer > 0:
+                            import random
+                            shake_offset = (random.randint(-2, 2), random.randint(-2, 2))
+
+                    # --- DRAW ---
+                    # If IDLE, ensure all pieces are visible (just in case)
+                    if anim_phase == "IDLE" and not visible_pieces:
+                         visible_pieces = {p.piece for p in solutions[current_sol_idx]}
+
+                    draw_solution_grid(
+                        screen, 
+                        cell_font, 
+                        solutions[current_sol_idx], 
+                        month, 
+                        day, 
+                        alpha=255,
+                        visible_pieces=visible_pieces,
+                        shake_offset=shake_offset,
+                        completion_shake=(completion_shake_timer > 0)
+                    )
                 else:
                     pass 
 
